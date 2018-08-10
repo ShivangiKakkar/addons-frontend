@@ -10,7 +10,7 @@ import { oneLine } from 'common-tags';
 import { withRenderedErrorHandler } from 'core/errorHandler';
 import { setLatestReview } from 'amo/actions/reviews';
 import { selectLatestUserReview } from 'amo/reducers/reviews';
-import { getLatestUserReview, submitReview } from 'amo/api/reviews';
+import * as reviewsApi from 'amo/api/reviews';
 import DefaultAddonReview from 'amo/components/AddonReview';
 import DefaultAuthenticateButton from 'core/components/AuthenticateButton';
 import DefaultReportAbuseButton from 'amo/components/ReportAbuseButton';
@@ -82,8 +82,6 @@ type State = {|
 |};
 
 export class RatingManagerBase extends React.Component<InternalProps, State> {
-  ratingLegend: React.ElementRef<'legend'> | null;
-
   static defaultProps = {
     AddonReview: DefaultAddonReview,
     AuthenticateButton: DefaultAuthenticateButton,
@@ -132,15 +130,17 @@ export class RatingManagerBase extends React.Component<InternalProps, State> {
     if (userReview) {
       log.debug(`Editing reviewId ${userReview.id}`);
       if (userReview.versionId === params.versionId) {
+        params.reviewId = userReview.id;
+
         log.debug(oneLine`Updating reviewId ${userReview.id} for
           versionId ${params.versionId || '[empty]'}`);
-        params.reviewId = userReview.id;
       } else {
         // Since we have a version mismatch, submit the review against the
         // current most version, similar to how new reviews are created.
         params.versionId =
           this.props.addon.current_version &&
           this.props.addon.current_version.id;
+
         log.debug(oneLine`Submitting a new review for
           versionId ${params.versionId || '[empty]'}`);
       }
@@ -148,6 +148,7 @@ export class RatingManagerBase extends React.Component<InternalProps, State> {
       log.debug(oneLine`Submitting a new review for
         versionId ${params.versionId || '[empty]'}`);
     }
+
     return this.props.submitReview(params).then(() => {
       this.setState({ showTextEntry: true });
     });
@@ -235,13 +236,7 @@ export class RatingManagerBase extends React.Component<InternalProps, State> {
         ) : null}
         <form action="">
           <fieldset>
-            <legend
-              ref={(ref) => {
-                this.ratingLegend = ref;
-              }}
-            >
-              {prompt}
-            </legend>
+            <legend className="RatingManager-legend">{prompt}</legend>
             {!isLoggedIn ? this.renderLogInToRate() : null}
             <UserRating
               readOnly={!isLoggedIn}
@@ -262,9 +257,10 @@ export const mapStateToProps = (state: AppState, ownProps: Props) => {
   if (userId && ownProps.addon) {
     const addonId = ownProps.addon.id;
     const versionId = ownProps.version.id;
-    log.debug(
-      `Looking for latest review of addon:${addonId}/version:${versionId} by user:${userId}`,
-    );
+
+    log.debug(oneLine`Looking for latest review of
+      addon:${addonId}/version:${versionId} by user:${userId}`);
+
     userReview = selectLatestUserReview({
       reviewsState: state.reviews,
       userId,
@@ -282,37 +278,47 @@ export const mapStateToProps = (state: AppState, ownProps: Props) => {
 
 export const mapDispatchToProps = (
   dispatch: DispatchFunc,
-): DispatchMappedProps => ({
-  loadSavedReview({ apiState, userId, addonId, addonSlug, versionId }) {
-    return getLatestUserReview({
-      apiState,
-      user: userId,
-      addon: addonId,
-      version: versionId,
-    }).then((review) => {
-      const _setLatestReview = (value) => {
-        return setLatestReview({
-          userId,
-          addonId,
-          addonSlug,
-          versionId,
-          review: value,
-        });
-      };
+  // We add `DispatchMappedProps` to override these functions in the tests.
+  ownProps: Props | DispatchMappedProps,
+): DispatchMappedProps => {
+  const loadSavedReview = ({
+    apiState,
+    userId,
+    addonId,
+    addonSlug,
+    versionId,
+  }) => {
+    return reviewsApi
+      .getLatestUserReview({
+        apiState,
+        user: userId,
+        addon: addonId,
+        version: versionId,
+      })
+      .then((review) => {
+        const _setLatestReview = (value) => {
+          return setLatestReview({
+            userId,
+            addonId,
+            addonSlug,
+            versionId,
+            review: value,
+          });
+        };
 
-      if (review) {
-        dispatch(_setLatestReview(review));
-      } else {
-        log.debug(
-          `No saved review found for userId ${userId}, addonId ${addonId}`,
-        );
-        dispatch(_setLatestReview(null));
-      }
-    });
-  },
+        if (review) {
+          dispatch(_setLatestReview(review));
+        } else {
+          log.debug(
+            `No saved review found for userId ${userId}, addonId ${addonId}`,
+          );
+          dispatch(_setLatestReview(null));
+        }
+      });
+  };
 
-  submitReview(params) {
-    return submitReview(params).then((review) => {
+  const submitReview = (params) => {
+    return reviewsApi.submitReview(params).then((review) => {
       // The API could possibly return a null review.version if that
       // version was deleted. In that case, we fall back to the submitted
       // versionId which came from the page data. It is highly unlikely
@@ -330,8 +336,13 @@ export const mapDispatchToProps = (
         }),
       );
     });
-  },
-});
+  };
+
+  return {
+    loadSavedReview: ownProps.loadSavedReview || loadSavedReview,
+    submitReview: ownProps.submitReview || submitReview,
+  };
+};
 
 export const RatingManagerWithI18n = translate()(RatingManagerBase);
 
